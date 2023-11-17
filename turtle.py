@@ -8,6 +8,8 @@ import RPi.GPIO as GPIO
 import logging
 import smbus
 import LCD1602 as LCD
+from threading import Thread
+import yaml
 
 LCD.init_lcd()
 time.sleep(0.5)
@@ -33,8 +35,6 @@ GPIO.output(GPIO_Alarm, GPIO.HIGH)
 time.sleep(0.1)
 GPIO.output(GPIO_Alarm, GPIO.LOW)
 GPIO.output(GPIO_OUT, GPIO.LOW)# 风扇开
-#蜂鸣器开，测试是否坏掉
-conn = pymysql.connect(host="localhost", port=13399, user="root",passwd="pass",db="turtle")
 
 sumT = 0;sumH = 0;avgT = -1;avgH = -1;count = 0
 minT = 99;minH = 99;maxT = -1;maxH = -1
@@ -45,20 +45,29 @@ refreshInterval = 20 #读取温湿度间隔
 fanOpenTime = 10 #风扇开启持续时间
 tempLimit = 15 #温度阈值，高于这个才开风扇
 tempAlarm = 35 #温度高报警
+alarmEnable = 1 #是否开启报警
+alarmNow = 0 #是否正在报警
+
+#读取yaml配置文件
+def readYaml(filePath):
+    with open(filePath, "r") as f:
+        return yaml.safe_load(f)
 
 def getSettings():
     global refreshInterval
     global fanOpenTime
     global tempLimit
     global tempAlarm
+    global alarmEnable
     cursor = conn.cursor()
-    cursor.execute("select refresh_interval, fan_open_time, temp_limit, temp_alarm from settings order by create_time desc")
+    cursor.execute("select refresh_interval, fan_open_time, temp_limit, temp_alarm, alarm_enable from settings order by create_time desc")
     setting = cursor.fetchone()
     refreshInterval = setting[0] #读取温湿度间隔
     fanOpenTime = setting[1] #风扇开启持续时间
     tempLimit = setting[2] #温度阈值，高于这个才开风扇
     tempAlarm = setting[3] #温度高报警
-    logging.info('采集间隔:{:0.0f}S 风扇开启时间:{:0.0f}S 温度阈值:{:0.0f}C 温度报警:{:0.0f}C'.format(refreshInterval, fanOpenTime, tempLimit, tempAlarm))
+    alarmEnable = setting[4] #是否开启报警
+    logging.info('报警状态:{:0.0f} 采集间隔:{:0.0f}S 风扇开启时间:{:0.0f}S 温度阈值:{:0.0f}C 温度报警:{:0.0f}C'.format(alarmEnable, refreshInterval, fanOpenTime, tempLimit, tempAlarm))
 
 #用于检测是否有人经过，经过就打开显示屏
 def checkPeople():
@@ -77,6 +86,23 @@ def fan(n):
     elif n == 1:
         strfan = '+'
     LCD.print_lcd(4, 0, strfan)
+
+#开启蜂鸣器报警
+def alarm():
+    global alarmNow
+    if alarmEnable == 0:
+        logging.info('蜂鸣器报警已被关闭')
+    if alarmNow > 0:
+        logging.info('蜂鸣器报警正在报警')
+        return
+    while alarmEnable > 0:
+        time.sleep(0.5)
+        GPIO.output(GPIO_Alarm, GPIO.HIGH)
+        time.sleep(0.5)
+        GPIO.output(GPIO_Alarm, GPIO.LOW)
+        logging.info('蜂鸣器报警')
+    GPIO.output(GPIO_Alarm, GPIO.LOW)
+    alarmNow = 0
 
 #获取lcd的进度显示
 def getloing(n):
@@ -98,6 +124,11 @@ def getloing(n):
         return '$$$'
 
 if __name__ == '__main__':
+    
+    data = readYaml("/home/baymin/turtle/config.yaml")
+    print(data)
+    conn = pymysql.connect(host=data["host"], port=data["port"], user=data["user"],passwd=data["password"],db=data["database"])
+
     LCD.print_lcd(0, 0, 'Getting Settings')
     getSettings()
     LCD.print_lcd(0, 1, '{:0.0f}S {:0.0f}S {:0.0f}C {:0.0f}C'.format(refreshInterval, fanOpenTime, tempLimit, tempAlarm))
@@ -142,7 +173,12 @@ if __name__ == '__main__':
                 fanOpen = 0
                 GPIO.output(GPIO_OUT, GPIO.LOW) # 风扇关闭
                 logging.info('温度不足v{:0.1f} ，风扇不开'.format(tempLimit))
-            #time.sleep(5)
+            # 温度过高报警
+            if temperature > tempAlarm and alarmEnable > 0:
+                t = Thread(target=alarm)
+                t.start()
+                alarmNow = 1
+                #time.sleep(5)
         checkPeople()
         if fanOpen == 1:
             fan(i%2)
