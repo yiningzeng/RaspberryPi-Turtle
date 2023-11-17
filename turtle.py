@@ -178,6 +178,8 @@ if __name__ == '__main__':
                 t = Thread(target=alarm)
                 t.start()
                 alarmNow = 1
+            else:
+                alarmEnable = 0 # 主要修复线程不会退出的异常
                 #time.sleep(5)
         checkPeople()
         if fanOpen == 1:
